@@ -4,12 +4,18 @@
   Some functions are inspired by work of G6EJD ( https://www.youtube.com/channel/UCgtlqH_lkMdIa4jZLItcsTg )
 
   Refactor by DeltaZero, converts to syncronous, added "cron" that you can bypass, see line 29
-                                                    The cron does not start until 10 minutes from reset (see constant onTimeAfterReset)
+  The cron does not start until 10 minutes from reset (see constant onTimeAfterReset)
   Every clock I know starts to listen to the radio at aproximatelly the hour o'clock, so cron takes this into account
 
   Alarm clocks from Junghans: Every hour (innecesery)
   Weather Station from Brigmton: 2 and 3 AM
   Chinesse movements and derivatives: 1 o'clock AM
+
+  David Cinthios ändringar:
+  Lagt till WiFiManager.h, WebServer.h & DNSServer.h för autoconnect av WiFi.
+  Ändrat rebootintervall från 6 h till 59 minuter (Ansluter till wifi och uppdaterar från NTP-server ~ en gång i timmen).
+  Ändrat i "switch (impulseCount++)" - inverterat utsignalen för positiv signal.
+  Lagt til "wifiManager.setConfigPortalTimeout(300);" om ESP ansluter till router men utan internetaccess.
 */
 
 
@@ -17,15 +23,22 @@
 #include <Ticker.h>
 #include <Time.h>
 
+#include <DNSServer.h>
+#if defined(ESP8266)
+#include <ESP8266WebServer.h>
+#else
+#include <WebServer.h>
+#endif
+#include <WiFiManager.h>
 
 
-#include "credentials.h"  // If you put this file in the same forlder that the rest of the tabs, then use "" to delimiter,
-                          // otherwise use <> or comment it and write your credentials directly on code
-                          // const char* ssid = "YourOwnSSID";
-                          // const char* password = "YourSoSecretPassword";
-                          
-#define LEDBUILTIN 5      // This is the pin for a Wemos board
-#define ANTENNAPIN 15     // You MUST adapt this pin to your preferences
+//#include "credentials.h"  // If you put this file in the same forlder that the rest of the tabs, then use "" to delimiter,
+// otherwise use <> or comment it and write your credentials directly on code
+// const char* ssid = "YourOwnSSID";
+// const char* password = "YourSoSecretPassword";
+
+#define LEDBUILTIN 2      // This is the pin for a Wemos board
+#define ANTENNAPIN 5     // You MUST adapt this pin to your preferences
 #define CONTINUOUSMODE // Uncomment this line to bypass de cron and have the transmitter on all the time
 
 // cron (if you choose the correct values you can even run on batteries)
@@ -34,9 +47,9 @@
 #define minuteToSleep   8 // If it is running at this minute then goes to sleep and waits until minuteToWakeUp
 
 
-byte hoursToWakeUp[] = {0,1,2,3}; // you can add more hours to adapt to your needs
-                      // When the ESP32 wakes up, check if the actual hour is in the list and
-                      // runs or goes to sleep until next minuteToWakeUp
+byte hoursToWakeUp[] = {0, 1, 2, 3}; // you can add more hours to adapt to your needs
+// When the ESP32 wakes up, check if the actual hour is in the list and
+// runs or goes to sleep until next minuteToWakeUp
 
 Ticker tickerDecisec; // TBD at 100ms
 
@@ -49,8 +62,8 @@ long dontGoToSleep = 0;
 const long onTimeAfterReset = 600000; // Ten minutes
 int timeRunningContinuous = 0;
 
-const char* ntpServer = "es.pool.ntp.org"; // enter your closer pool or pool.ntp.org
-const char* TZ_INFO    = "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00";  // enter your time zone (https://remotemonitoringsystems.ca/time-zone-abbreviations.php)
+const char* ntpServer = "se.pool.ntp.org"; // enter your closer pool or pool.ntp.org
+const char* TZ_INFO    = "CET-1CEST,M3.5.0/2,M10.5.0/3";  // enter your time zone (https://remotemonitoringsystems.ca/time-zone-abbreviations.php)
 
 struct tm timeinfo;
 
@@ -73,7 +86,7 @@ void setup() {
   getNTP();
   WiFi_off();
   show_time();
-  
+
   CodeTime(); // first conversion just for cronCheck
 #ifndef CONTINUOUSMODE
   if ((dontGoToSleep == 0) or ((dontGoToSleep + onTimeAfterReset) < millis())) cronCheck(); // first check before start anything
@@ -87,7 +100,7 @@ void setup() {
   long count = 0;
   do {
     count++;
-    if(!getLocalTime(&timeinfo)){
+    if (!getLocalTime(&timeinfo)) {
       Serial.println("Error obtaining time...");
       delay(3000);
       ESP.restart();
@@ -115,7 +128,7 @@ void CodeTime() {
     actualMinutes = 0;
     actualHours++;
   }
-  actualSecond = timeinfo.tm_sec; 
+  actualSecond = timeinfo.tm_sec;
   if (actualSecond == 60) actualSecond = 0;
 
   int n, Tmp, TmpIn;
@@ -123,14 +136,14 @@ void CodeTime() {
 
   //we put the first 20 bits of each minute at a logical zero value
   for (n = 0; n < 20; n++) impulseArray[n] = 1;
-  
+
   // set DST bit
   if (timeinfo.tm_isdst == 0) {
     impulseArray[18] = 2; // CET or DST OFF
   } else {
     impulseArray[17] = 2; // CEST or DST ON
   }
-  
+
   //bit 20 must be 1 to indicate active time
   impulseArray[20] = 2;
 
@@ -216,18 +229,18 @@ void DcfOut() {
   switch (impulseCount++) {
     case 0:
       if (impulseArray[actualSecond] != 0) {
-        digitalWrite(LEDBUILTIN, LOW);
+        digitalWrite(LEDBUILTIN, HIGH); //Ändrat från LOW till HIGH
         ledcWrite(0, 0);
       }
       break;
     case 1:
       if (impulseArray[actualSecond] == 1) {
-        digitalWrite(LEDBUILTIN, HIGH);
+        digitalWrite(LEDBUILTIN, LOW); //Ändrat från HIGH till LOW
         ledcWrite(0, 127);
       }
       break;
     case 2:
-      digitalWrite(LEDBUILTIN, HIGH);
+      digitalWrite(LEDBUILTIN, LOW); //Ändrat från HIGH till LOW
       ledcWrite(0, 127);
       break;
     case 9:
@@ -248,12 +261,12 @@ void DcfOut() {
 #else
         Serial.println("CONTINUOUS MODE NO CRON!!!");
         timeRunningContinuous++;
-        if (timeRunningContinuous > 360) ESP.restart(); // 6 hours running, then restart all over
+        if (timeRunningContinuous > 59) ESP.restart(); // (Ändrat från 360 till 59) 59 minutes running, then restart all over.
 #endif
       }
       break;
   }
-  if(!getLocalTime(&timeinfo)){
+  if (!getLocalTime(&timeinfo)) {
     Serial.println("Error obtaining time...");
     delay(3000);
     ESP.restart();
